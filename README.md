@@ -92,3 +92,5 @@ Player - Participant of the raffle, has the power to enter the raffle with the `
 # Known Issues
 
 None
+
+pandoc report_puppy_raffle.md -o 2024_06_14_report_puppy_raffle.pdf --from markdown --template=eisvogel --listings

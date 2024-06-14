@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.7.6;
+// @audit-written info: don't use floating pragma
+// @audit-written info: don't use old version of solidity
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -21,6 +23,7 @@ contract PuppyRaffle is ERC721, Ownable {
     uint256 public immutable entranceFee;
 
     address[] public players;
+    // @audit-writte gas: Should be immutable to save gas
     uint256 public raffleDuration;
     uint256 public raffleStartTime;
     address public previousWinner;
@@ -35,21 +38,25 @@ contract PuppyRaffle is ERC721, Ownable {
     mapping(uint256 => string) public rarityToName;
 
     // Stats for the common puppy (pug)
+    // @audit-written info: gas optimazation, should be constant
     string private commonImageUri = "ipfs://QmSsYRx3LpDAb1GZQm7zZ1AuHZjfbPkD6J7s9r41xu1mf8";
     uint256 public constant COMMON_RARITY = 70;
     string private constant COMMON = "common";
 
     // Stats for the rare puppy (st. bernard)
+    // @audit-written info: gas optimazation, should be constant
     string private rareImageUri = "ipfs://QmUPjADFGEKmfohdTaNcWhp7VGk26h5jXDA7v3VtTnTLcW";
     uint256 public constant RARE_RARITY = 25;
     string private constant RARE = "rare";
 
     // Stats for the legendary puppy (shiba inu)
+    // @audit-written info: gas optimazation, should be constant
     string private legendaryImageUri = "ipfs://QmYx6GsYAKnNzZ9A6NvEKV9nf1VaDzJrqDR23Y8YSkebLU";
     uint256 public constant LEGENDARY_RARITY = 5;
     string private constant LEGENDARY = "legendary";
 
     // Events
+    // @audit-written info: index fields where needed
     event RaffleEnter(address[] newPlayers);
     event RaffleRefunded(address player);
     event FeeAddressChanged(address newFeeAddress);
@@ -59,6 +66,8 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @param _raffleDuration the duration in seconds of the raffle
     constructor(uint256 _entranceFee, address _feeAddress, uint256 _raffleDuration) ERC721("Puppy Raffle", "PR") {
         entranceFee = _entranceFee;
+        // @audit-skipped info: Input validation, check for zero address
+        
         feeAddress = _feeAddress;
         raffleDuration = _raffleDuration;
         raffleStartTime = block.timestamp;
@@ -78,29 +87,37 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @param newPlayers the list of players to enter the raffle
     function enterRaffle(address[] memory newPlayers) public payable {
         require(msg.value == entranceFee * newPlayers.length, "PuppyRaffle: Must send enough to enter raffle");
+        // @audit-written info: gas optimization, should cache the newPlayers length in a variable
         for (uint256 i = 0; i < newPlayers.length; i++) {
             players.push(newPlayers[i]);
         }
 
         // Check for duplicates
+        // @audit-written DoS possibility
         for (uint256 i = 0; i < players.length - 1; i++) {
             for (uint256 j = i + 1; j < players.length; j++) {
+                // @audit: When to player refunded, their address is set to address(0). When at least two players are refunded, the check will fail
                 require(players[i] != players[j], "PuppyRaffle: Duplicate player");
             }
         }
+        // @audit-written will still emit an event even if the `newPlayers` array is empty
         emit RaffleEnter(newPlayers);
+        
+        
     }
 
     /// @param playerIndex the index of the player to refund. You can find it externally by calling `getActivePlayerIndex`
     /// @dev This function will allow there to be blank spots in the array
     function refund(uint256 playerIndex) public {
+        // @audit-skipped: MEV
         address playerAddress = players[playerIndex];
         require(playerAddress == msg.sender, "PuppyRaffle: Only the player can refund");
         require(playerAddress != address(0), "PuppyRaffle: Player already refunded, or is not active");
 
         payable(msg.sender).sendValue(entranceFee);
-
+        // @audit-written Reentrance is possible because player is only reset after funds are sent
         players[playerIndex] = address(0);
+        // @audit-skipped low: Event manipulation, the event will not be emitted on reentrancy 
         emit RaffleRefunded(playerAddress);
     }
 
@@ -113,6 +130,7 @@ contract PuppyRaffle is ERC721, Ownable {
                 return i;
             }
         }
+        // @audit-written the player could actually be at index 0
         return 0;
     }
 
@@ -123,19 +141,29 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @dev we reset the active players array after the winner is selected
     /// @dev we send 80% of the funds to the winner, the other 20% goes to the feeAddress
     function selectWinner() external {
+        // @audit-written should follow CEI, informational
         require(block.timestamp >= raffleStartTime + raffleDuration, "PuppyRaffle: Raffle not over");
         require(players.length >= 4, "PuppyRaffle: Need at least 4 players");
+        // @audit-written This is not a good way to generate randomness
         uint256 winnerIndex =
             uint256(keccak256(abi.encodePacked(msg.sender, block.timestamp, block.difficulty))) % players.length;
         address winner = players[winnerIndex];
+        // @audit-wrottem the amount collected could also be got by address(this).balance
         uint256 totalAmountCollected = players.length * entranceFee;
+        // @audit-written precision loos
+        // @audit-wrotten magic numbers 80, 20, and 100, could be PRIZE_POOL_PERCENTAGE, FEE_PERCENTAGE, and PRIZE_PRECISION
         uint256 prizePool = (totalAmountCollected * 80) / 100;
+        // @audit-written precision loos
         uint256 fee = (totalAmountCollected * 20) / 100;
+        // @audit Overflows can happen here, fee can only hold 18446744073709551615 wei = 18.44 ether, so the protocol will overflow after 18.44 ether
+        // @audit unsafe cast to uint64
         totalFees = totalFees + uint64(fee);
 
+        // The tokenId is the number of ERC721s minted
         uint256 tokenId = totalSupply();
 
         // We use a different RNG calculate from the winnerIndex to determine rarity
+        // @audit This is not a good way to generate randomness
         uint256 rarity = uint256(keccak256(abi.encodePacked(msg.sender, block.difficulty))) % 100;
         if (rarity <= COMMON_RARITY) {
             tokenIdToRarity[tokenId] = COMMON_RARITY;
@@ -155,9 +183,12 @@ contract PuppyRaffle is ERC721, Ownable {
 
     /// @notice this function will withdraw the fees to the feeAddress
     function withdrawFees() external {
+        // @audit initial zero assumption / mishandling eth, the balance of the address can be increased by `selfdestruct`
+        // @audit might prevent the owner from withdrawing fees if there are active players all the time
         require(address(this).balance == uint256(totalFees), "PuppyRaffle: There are currently players active!");
         uint256 feesToWithdraw = totalFees;
         totalFees = 0;
+        // slither-disable-next-line arbitrary-send-eth
         (bool success,) = feeAddress.call{value: feesToWithdraw}("");
         require(success, "PuppyRaffle: Failed to withdraw fees");
     }
@@ -166,10 +197,12 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @param newFeeAddress the new address to send fees to
     function changeFeeAddress(address newFeeAddress) external onlyOwner {
         feeAddress = newFeeAddress;
+        // @audit Events at other storage updates are missing
         emit FeeAddressChanged(newFeeAddress);
     }
 
     /// @notice this function will return true if the msg.sender is an active player
+    // @audit function is not used
     function _isActivePlayer() internal view returns (bool) {
         for (uint256 i = 0; i < players.length; i++) {
             if (players[i] == msg.sender) {
